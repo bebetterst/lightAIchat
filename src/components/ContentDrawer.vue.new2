@@ -1,0 +1,212 @@
+// 导出为HTML
+const exportToHtml = (fileName: string, content: string) => {
+  ElMessage.info('正在处理HTML导出，请稍候...')
+  
+  // 创建一个临时的div元素来渲染Markdown内容
+  const tempDiv = document.createElement('div')
+  tempDiv.className = 'html-export-container'
+  tempDiv.style.padding = '20px'
+  tempDiv.style.backgroundColor = 'white'
+  tempDiv.style.position = 'absolute'
+  tempDiv.style.left = '-9999px' // 放在屏幕外
+  tempDiv.style.top = '0'
+  
+  // 渲染Markdown内容
+  const renderedContent = marked(content)
+  tempDiv.innerHTML = renderedContent
+  document.body.appendChild(tempDiv)
+  
+  // 处理Mermaid图表渲染
+  const renderMermaid = () => {
+    return new Promise<void>((resolve) => {
+      const mermaidDivs = tempDiv.querySelectorAll('.mermaid')
+      if (mermaidDivs.length === 0) {
+        resolve()
+        return
+      }
+      
+      // 创建观察器监听渲染完成
+      const observer = new MutationObserver((mutations, obs) => {
+        let allRendered = true
+        for (const div of mermaidDivs) {
+          if (!div.querySelector('svg')) {
+            allRendered = false
+            break
+          }
+        }
+        
+        if (allRendered) {
+          obs.disconnect()
+          setTimeout(() => resolve(), 500)
+        }
+      })
+      
+      observer.observe(tempDiv, { childList: true, subtree: true })
+      
+      // 初始化并渲染Mermaid图表
+      if (typeof window.mermaid !== 'undefined') {
+        try {
+          window.mermaid.initialize({ 
+            startOnLoad: false,
+            securityLevel: 'loose',
+            theme: 'default'
+          })
+          window.mermaid.init(undefined, mermaidDivs)
+          
+          setTimeout(() => {
+            observer.disconnect()
+            resolve()
+          }, 2000)
+        } catch (e) {
+          console.error('Mermaid渲染失败:', e)
+          observer.disconnect()
+          resolve()
+        }
+      } else {
+        // 动态加载Mermaid
+        const script = document.createElement('script')
+        script.src = 'https://cdn.jsdelivr.net/npm/mermaid/dist/mermaid.min.js'
+        script.onload = () => {
+          try {
+            window.mermaid.initialize({ 
+              startOnLoad: false,
+              securityLevel: 'loose',
+              theme: 'default'
+            })
+            window.mermaid.init(undefined, mermaidDivs)
+            
+            setTimeout(() => {
+              observer.disconnect()
+              resolve()
+            }, 2000)
+          } catch (e) {
+            console.error('Mermaid渲染失败:', e)
+            observer.disconnect()
+            resolve()
+          }
+        }
+        script.onerror = () => {
+          console.error('加载Mermaid脚本失败')
+          observer.disconnect()
+          resolve()
+        }
+        document.head.appendChild(script)
+      }
+    })
+  }
+  
+  // 处理LaTeX公式
+  const processKatex = () => {
+    return new Promise<void>((resolve) => {
+      const katexElements = tempDiv.querySelectorAll('.katex')
+      if (katexElements.length === 0) {
+        resolve()
+        return
+      }
+      
+      // 简单等待公式渲染
+      setTimeout(() => resolve(), 500)
+    })
+  }
+  
+  // 执行导出流程
+  const executeExport = async () => {
+    try {
+      // 先处理公式和图表
+      await processKatex()
+      await renderMermaid()
+      
+      // 确保SVG正确显示
+      const svgElements = tempDiv.querySelectorAll('svg')
+      svgElements.forEach(svg => {
+        svg.style.display = 'block'
+        svg.style.visibility = 'visible'
+        svg.style.maxWidth = '100%'
+        if (!svg.hasAttribute('width')) {
+          svg.setAttribute('width', '100%')
+        }
+      })
+      
+      // 等待确保渲染完成
+      await new Promise(resolve => setTimeout(resolve, 1000))
+      
+      // 创建完整的HTML文档
+      const htmlContent = `
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>${fileName}</title>
+  <style>
+    body {
+      font-family: Arial, sans-serif;
+      line-height: 1.6;
+      color: #333;
+      max-width: 800px;
+      margin: 0 auto;
+      padding: 20px;
+    }
+    pre {
+      background-color: #f5f5f5;
+      padding: 10px;
+      border-radius: 5px;
+      overflow-x: auto;
+      margin: 15px 0;
+    }
+    code {
+      font-family: monospace;
+    }
+    img {
+      max-width: 100%;
+    }
+    table {
+      border-collapse: collapse;
+      width: 100%;
+      margin: 15px 0;
+    }
+    table, th, td {
+      border: 1px solid #ddd;
+    }
+    th, td {
+      padding: 8px;
+      text-align: left;
+    }
+    .mermaid {
+      background: white;
+      padding: 10px;
+      border-radius: 5px;
+      margin: 15px 0;
+    }
+    svg {
+      max-width: 100%;
+      display: block;
+      margin: 0 auto;
+    }
+  </style>
+</head>
+<body>
+  ${tempDiv.innerHTML}
+</body>
+</html>
+      `
+      
+      // 创建Blob并下载
+      const blob = new Blob([htmlContent], { type: 'text/html;charset=utf-8' })
+      saveAs(blob, `${fileName}.html`)
+      
+      ElMessage.success('已导出为HTML文件')
+    } catch (error) {
+      console.error('HTML导出错误:', error)
+      ElMessage.error(`HTML导出失败: ${error.message || '未知错误'}`)
+    } finally {
+      // 清理临时元素
+      if (document.body.contains(tempDiv)) {
+        document.body.removeChild(tempDiv)
+      }
+    }
+  }
+  
+  // 开始导出流程
+  executeExport()
+}

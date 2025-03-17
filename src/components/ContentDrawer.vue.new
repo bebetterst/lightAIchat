@@ -1,0 +1,365 @@
+<template>
+  <el-drawer
+    v-model="visible"
+    title="我的内容"
+    :size="isFullscreen ? '100%' : '50%'"
+    :destroy-on-close="false"
+    direction="rtl"
+  >
+    <template #header>
+      <div style="display: flex; align-items: center; justify-content: space-between; width: 100%;">
+        <span>我的内容</span>
+        <el-button
+          type="text"
+          @click="toggleFullscreen"
+          :icon="isFullscreen ? 'FullScreen' : 'FullScreen'"
+          :title="isFullscreen ? '还原' : '最大化'"
+        >
+          <el-icon><component :is="isFullscreen ? 'Minus' : 'FullScreen'" /></el-icon>
+        </el-button>
+      </div>
+    </template>
+    <div class="content-drawer-container">
+      <div class="content-list">
+        <div 
+          v-for="(item, index) in contentList" 
+          :key="index" 
+          class="content-item" 
+          :class="{ active: currentContentId === item.id }"
+          @click="selectContent(item.id)"
+        >
+          <el-icon><Document /></el-icon>
+          <span>{{ item.title }}</span>
+        </div>
+        <div v-if="contentList.length === 0" class="empty-tip">
+          暂无保存的内容
+        </div>
+      </div>
+      
+      <div class="content-editor">
+        <div class="editor-header">
+          <h3>{{ currentContent?.title || '选择内容' }}</h3>
+          <div class="header-actions" v-if="currentContent">
+            <el-button type="primary" size="small" @click="saveContent">
+              <el-icon><Check /></el-icon>
+              保存修改
+            </el-button>
+            <el-button type="danger" size="small" @click="deleteContent">
+              <el-icon><Delete /></el-icon>
+              删除
+            </el-button>
+          </div>
+        </div>
+        
+        <div class="editor-container" v-if="currentContent">
+          <div class="editor-toolbar">
+            <div class="editor-toolbar-left">
+              <el-button size="small" @click="copyEditingContent">
+                <el-icon><CopyDocument /></el-icon>
+                复制
+              </el-button>
+              <el-dropdown size="small" @command="handleExportMarkdown" trigger="click">
+                <el-button size="small">
+                  <el-icon><Download /></el-icon>
+                  导出
+                  <el-icon class="el-icon--right"><ArrowDown /></el-icon>
+                </el-button>
+                <template #dropdown>
+                  <el-dropdown-menu>
+                    <el-dropdown-item command="md">Markdown (.md)</el-dropdown-item>
+                    <el-dropdown-item command="txt">纯文本 (.txt)</el-dropdown-item>
+                  </el-dropdown-menu>
+                </template>
+              </el-dropdown>
+            </div>
+            <div class="editor-toolbar-right">
+              <el-button size="small" @click="copyRenderedContent">
+                <el-icon><CopyDocument /></el-icon>
+                复制
+              </el-button>
+              <el-dropdown size="small" @command="handleExportRendered" trigger="click">
+                <el-button size="small">
+                  <el-icon><Download /></el-icon>
+                  导出
+                  <el-icon class="el-icon--right"><ArrowDown /></el-icon>
+                </el-button>
+                <template #dropdown>
+                  <el-dropdown-menu>
+                    <el-dropdown-item command="pdf">PDF (.pdf)</el-dropdown-item>
+                    <el-dropdown-item command="html">HTML (.html)</el-dropdown-item>
+                  </el-dropdown-menu>
+                </template>
+              </el-dropdown>
+            </div>
+          </div>
+          <MdEditor
+            v-model="editingContent"
+            :theme="editorTheme"
+            :toolbars="toolbars"
+            @onSave="saveContent"
+            previewTheme="github"
+            codeTheme="atom"
+            showCodeRowNumber
+            :preview="preview"
+            :tabWidth="2"
+          />
+        </div>
+        
+        <div class="empty-state" v-else>
+          <el-empty description="请选择内容或从聊天页面保存内容" />
+        </div>
+      </div>
+    </div>
+  </el-drawer>
+</template>
+
+<script setup lang="ts">
+import { ref, computed, defineProps, defineEmits, watch } from 'vue'
+import { ElMessage, ElMessageBox } from 'element-plus'
+import { MdEditor} from 'md-editor-v3'
+import 'md-editor-v3/lib/style.css'
+import { Document, Check, Delete, FullScreen, Minus, CopyDocument, Download, ArrowDown } from '@element-plus/icons-vue'
+import html2pdf from 'html2pdf.js'
+import { saveAs } from 'file-saver'
+import { marked } from 'marked'
+import { convertGraphToFlowchart } from '../utils/mermaidUtils'
+
+// 为Mermaid全局变量声明接口
+declare global {
+  interface Window {
+    mermaid: {
+      initialize: (config: any) => void;
+      init: (config: any, elements: NodeListOf<Element>) => void;
+    }
+  }
+}
+
+interface ContentItem {
+  id: string
+  title: string
+  content: string
+  createdAt: number
+}
+
+const props = defineProps<{
+  contentDrawerVisible: boolean
+}>()
+
+const emit = defineEmits<{
+  (e: 'update:contentDrawerVisible', value: boolean): void
+}>()
+
+// 计算属性用于控制抽屉的显示/隐藏
+const visible = ref(false)
+const isFullscreen = ref(false)
+
+// 切换全屏状态
+const toggleFullscreen = () => {
+  isFullscreen.value = !isFullscreen.value
+}
+
+watch(() => props.contentDrawerVisible, (newVal) => {
+  visible.value = newVal
+  if (newVal) {
+    // 当抽屉打开时，加载内容列表
+    loadContentList()
+  }
+})
+
+watch(visible, (newVal) => {
+  emit('update:contentDrawerVisible', newVal)
+  // 当抽屉关闭时，重置全屏状态
+  if (!newVal) {
+    isFullscreen.value = false
+  }
+})
+
+// 状态管理
+const contentList = ref<ContentItem[]>([])
+const currentContentId = ref<string>('')
+const editingContent = ref('')
+const editorTheme = ref('light')
+const preview = ref(true)
+
+// 编辑器工具栏配置
+const toolbars = [
+  'bold', 'italic', 'strikethrough', 'heading', 'quote', 'code', 'link', 'image', 'table',
+  'ordered-list', 'unordered-list', 'checked-list', 'line', 'save', 'preview', 'fullscreen',
+  'mermaid', 'katex'
+]
+
+// 计算当前选中的内容
+const currentContent = computed(() => {
+  return contentList.value.find(item => item.id === currentContentId.value)
+})
+
+// 选择内容
+const selectContent = (contentId: string) => {
+  currentContentId.value = contentId
+  if (currentContent.value) {
+    editingContent.value = currentContent.value.content
+  }
+}
+
+// 加载内容列表
+const loadContentList = () => {
+  const savedContents = localStorage.getItem('savedContents')
+  if (savedContents) {
+    try {
+      contentList.value = JSON.parse(savedContents)
+    } catch (e) {
+      console.error('解析保存的内容失败:', e)
+      contentList.value = []
+    }
+  }
+}
+
+// 复制编辑中的内容
+const copyEditingContent = () => {
+  if (!editingContent.value) return
+  
+  navigator.clipboard.writeText(editingContent.value)
+    .then(() => {
+      ElMessage.success('已复制到剪贴板')
+    })
+    .catch(err => {
+      console.error('复制失败:', err)
+      ElMessage.error('复制失败')
+    })
+}
+
+// 复制渲染后的内容
+const copyRenderedContent = () => {
+  if (!editingContent.value) return
+  
+  // 先处理Mermaid图表格式
+  const processedContent = convertGraphToFlowchart(editingContent.value)
+  
+  // 将Markdown转换为HTML
+  const renderedContent = marked(processedContent)
+  
+  // 创建一个临时元素来获取纯文本
+  const tempElement = document.createElement('div')
+  tempElement.innerHTML = renderedContent
+  const textContent = tempElement.textContent || tempElement.innerText || ''
+  
+  navigator.clipboard.writeText(textContent)
+    .then(() => {
+      ElMessage.success('已复制渲染内容到剪贴板')
+    })
+    .catch(err => {
+      console.error('复制失败:', err)
+      ElMessage.error('复制失败')
+    })
+}
+
+// 处理导出Markdown
+const handleExportMarkdown = (type: string) => {
+  if (!currentContent.value) return
+  
+  const fileName = `${currentContent.value.title || '导出内容'}`
+  
+  switch (type) {
+    case 'md':
+      // 导出为Markdown
+      const mdBlob = new Blob([editingContent.value], { type: 'text/markdown;charset=utf-8' })
+      saveAs(mdBlob, `${fileName}.md`)
+      ElMessage.success('已导出为Markdown文件')
+      break
+      
+    case 'txt':
+      // 导出为纯文本
+      const txtBlob = new Blob([editingContent.value], { type: 'text/plain;charset=utf-8' })
+      saveAs(txtBlob, `${fileName}.txt`)
+      ElMessage.success('已导出为纯文本文件')
+      break
+  }
+}
+
+// 处理导出渲染结果
+const handleExportRendered = (type: string) => {
+  if (!currentContent.value) return
+  
+  const fileName = `${currentContent.value.title || '导出内容'}`
+  
+  // 先处理Mermaid图表格式
+  const processedContent = convertGraphToFlowchart(editingContent.value)
+  
+  switch (type) {
+    case 'pdf':
+      // 导出为PDF
+      exportToPdf(fileName, processedContent)
+      break
+      
+    case 'html':
+      // 导出为HTML
+      exportToHtml(fileName, processedContent)
+      break
+  }
+}
+
+// 导出为HTML
+const exportToHtml = (fileName: string, content: string) => {
+  ElMessage.info('正在处理HTML导出，请稍候...')
+  
+  // 创建一个临时的div元素来渲染Markdown内容
+  const tempDiv = document.createElement('div')
+  // 先将内容渲染为HTML
+  const renderedContent = marked(content)
+  tempDiv.innerHTML = renderedContent
+  
+  // 添加基本样式
+  const style = document.createElement('style')
+  style.textContent = `
+    body { font-family: Arial, sans-serif; line-height: 1.6; padding: 20px; max-width: 800px; margin: 0 auto; }
+    pre { background-color: #f5f5f5; padding: 10px; border-radius: 5px; overflow-x: auto; }
+    code { font-family: monospace; }
+    img { max-width: 100%; }
+    table { border-collapse: collapse; width: 100%; margin-bottom: 20px; }
+    table, th, td { border: 1px solid #ddd; }
+    th, td { padding: 8px; text-align: left; }
+    .mermaid { background: white; padding: 10px; border-radius: 5px; margin: 15px 0; }
+  `
+  
+  // 使用Promise处理Mermaid图表渲染
+  const renderMermaid = () => {
+    return new Promise<void>((resolve) => {
+      // 检查是否有mermaid图表
+      const mermaidDivs = tempDiv.querySelectorAll('.mermaid')
+      if (mermaidDivs.length === 0) {
+        // 没有mermaid图表，直接解析Promise
+        resolve()
+        return
+      }
+      
+      if (typeof window.mermaid !== 'undefined') {
+        try {
+          window.mermaid.initialize({ 
+            startOnLoad: false,
+            securityLevel: 'loose',
+            theme: 'default'
+          })
+          window.mermaid.init(undefined, mermaidDivs)
+          
+          // 等待图表渲染完成
+          setTimeout(() => resolve(), 1000)
+        } catch (e) {
+          console.error('Mermaid渲染失败:', e)
+          resolve() // 即使失败也继续
+        }
+      } else {
+        // 如果mermaid未加载，动态加载并初始化
+        const script = document.createElement('script')
+        script.src = 'https://cdn.jsdelivr.net/npm/mermaid/dist/mermaid.min.js'
+        script.onload = () => {
+          try {
+            window.mermaid.initialize({ 
+              startOnLoad: false,
+              securityLevel: 'loose',
+              theme: 'default'
+            })
+            window.mermaid.init(undefined, mermaidDivs)
+            
+            // 等待图表渲染完成
+            setTimeout(() => resolve(), 1000)
+          } catch (e)
