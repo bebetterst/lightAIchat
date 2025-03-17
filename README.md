@@ -25,7 +25,7 @@
 1. 克隆或下载项目代码
 
 ```bash
-git clone <仓库地址>
+git clone https://github.com/bebetterst/lightAIchat.git
 cd AIchat
 ```
 
